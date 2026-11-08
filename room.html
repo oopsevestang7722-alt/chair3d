@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ห้องจำลอง 3D – ลองวางเก้าอี้</title>
+<style>
+  html, body { margin:0; height:100%; font-family: system-ui, "Noto Sans Thai", sans-serif; background:#e9e5de; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100%; }
+  canvas { flex:1; min-height:0; display:block; width:100%; touch-action:none; }
+  #panel { background:#fff; padding:10px 12px; display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; font-size:.9rem; box-shadow:0 -2px 8px rgba(0,0,0,.08); }
+  #panel label { display:flex; align-items:center; gap:6px; }
+  #panel input[type=range] { width:110px; }
+  button { padding:8px 12px; border:0; border-radius:8px; background:#222; color:#fff; cursor:pointer; font-size:.9rem; }
+  button.sec { background:#e6e2da; color:#222; }
+  .sw { width:26px; height:26px; border-radius:50%; border:2px solid #ccc; padding:0; }
+  .sw.on { border-color:#222; }
+  a.back { color:#222; margin-left:auto; }
+  #hint { position:absolute; top:8px; left:8px; background:rgba(255,255,255,.85); padding:6px 10px; border-radius:8px; font-size:.8rem; pointer-events:none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="c"></canvas>
+  <div id="hint">ลากเก้าอี้เพื่อย้าย • ลากพื้นที่ว่างเพื่อหมุนมุมมอง • บีบ/เลื่อนล้อเพื่อซูม</div>
+  <div id="panel">
+    <label>กว้าง <input type="range" id="w" min="2" max="8" step="0.1" value="4"> <span id="wv">4.0</span> ม.</label>
+    <label>ลึก <input type="range" id="d" min="2" max="8" step="0.1" value="3.5"> <span id="dv">3.5</span> ม.</label>
+    <label>สีผนัง <input type="color" id="wall" value="#efe6d8"></label>
+    <span id="cols"></span>
+    <button id="rot">หมุนเก้าอี้ 90°</button>
+    <button id="corner" class="sec">วางที่มุมห้อง</button>
+    <a class="back" href="index.html">← กลับหน้าสินค้า</a>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9e5de);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 50);
+const controls = new OrbitControls(camera, canvas);
+controls.maxPolarAngle = Math.PI / 2.05;
+controls.minDistance = 1.5; controls.maxDistance = 14;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xbbb2a2, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(3, 5, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left:-6, right:6, top:6, bottom:-6, near:0.5, far:20 });
+scene.add(sun);
+
+// ---------- ห้อง ----------
+let W = 4, D = 3.5, H = 2.6;
+const room = new THREE.Group(); scene.add(room);
+const floorMat = new THREE.MeshStandardMaterial({ color:0xc9b79c, roughness:0.9 });
+const wallMat = new THREE.MeshStandardMaterial({ color:0xefe6d8, roughness:1, side:THREE.DoubleSide });
+
+function buildRoom() {
+  room.clear();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), floorMat);
+  floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; floor.name = 'floor';
+  room.add(floor);
+  // ผนังหลังและผนังซ้าย (เห็นมุมห้อง)
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(W, H), wallMat);
+  back.position.set(0, H/2, -D/2); back.receiveShadow = true; room.add(back);
+  const left = new THREE.Mesh(new THREE.PlaneGeometry(D, H), wallMat);
+  left.rotation.y = Math.PI/2; left.position.set(-W/2, H/2, 0); left.receiveShadow = true; room.add(left);
+  // ไม้บรรทัดขอบพื้น
+  const edge = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(W, 0.001, D)),
+    new THREE.LineBasicMaterial({ color:0x8a7a64 }));
+  edge.position.y = 0.002; room.add(edge);
+}
+
+function frameCamera() {
+  camera.position.set(W*0.55, 2.4, D*1.15);
+  controls.target.set(0, 0.5, 0);
+  controls.update();
+}
+
+// ---------- เก้าอี้ ----------
+const HALF = 0.3; // รัศมีโดยประมาณของเก้าอี้ (เมตร)
+const chair = new THREE.Group(); scene.add(chair);
+const seatMats = [];
+
+new GLTFLoader().load('chairDesk.glb', gltf => {
+  gltf.scene.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      if (o.material && o.material.name === 'carpet') seatMats.push(o.material);
+    }
+  });
+  chair.add(gltf.scene);
+  snapCorner();
+}, undefined, () => {
+  document.getElementById('hint').textContent = 'โหลด chairDesk.glb ไม่สำเร็จ ตรวจสอบว่าไฟล์อยู่โฟลเดอร์เดียวกับหน้านี้';
+});
+
+function clampChair() {
+  chair.position.x = Math.min(W/2 - HALF, Math.max(-W/2 + HALF, chair.position.x));
+  chair.position.z = Math.min(D/2 - HALF, Math.max(-D/2 + HALF, chair.position.z));
+}
+function snapCorner() {
+  chair.position.set(-W/2 + HALF, 0, -D/2 + HALF);
+  chair.rotation.y = Math.PI/4;
+}
+
+// ---------- ลากเก้าอี้ (เมาส์และสัมผัส) ----------
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+const hit = new THREE.Vector3();
+let dragging = false, offset = new THREE.Vector3();
+
+function setRay(e) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left)/r.width)*2 - 1, -((e.clientY - r.top)/r.height)*2 + 1);
+  ray.setFromCamera(ndc, camera);
+}
+canvas.addEventListener('pointerdown', e => {
+  setRay(e);
+  if (ray.intersectObject(chair, true).length) {
+    dragging = true; controls.enabled = false;
+    canvas.setPointerCapture(e.pointerId);
+    if (ray.ray.intersectPlane(groundPlane, hit)) offset.copy(chair.position).sub(hit);
+  }
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  setRay(e);
+  if (ray.ray.intersectPlane(groundPlane, hit)) {
+    chair.position.x = hit.x + offset.x;
+    chair.position.z = hit.z + offset.z;
+    clampChair();
+  }
+});
+const endDrag = () => { dragging = false; controls.enabled = true; };
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+// ---------- ปุ่มควบคุม ----------
+const $ = id => document.getElementById(id);
+function resizeRoom() {
+  W = +$('w').value; D = +$('d').value;
+  $('wv').textContent = W.toFixed(1); $('dv').textContent = D.toFixed(1);
+  buildRoom(); clampChair();
+}
+$('w').addEventListener('input', resizeRoom);
+$('d').addEventListener('input', resizeRoom);
+$('wall').addEventListener('input', e => wallMat.color.set(e.target.value));
+$('rot').addEventListener('click', () => { chair.rotation.y += Math.PI/2; });
+$('corner').addEventListener('click', snapCorner);
+
+[['#d94038',[0.85,0.25,0.22]],['#2f6fd1',[0.18,0.44,0.82]],['#2e9e6a',[0.18,0.62,0.42]],['#2b2b2b',[0.17,0.17,0.17]]]
+.forEach(([hex, rgb], i) => {
+  const b = document.createElement('button');
+  b.className = 'sw' + (i === 0 ? ' on' : ''); b.style.background = hex;
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.sw').forEach(x => x.classList.remove('on')); b.classList.add('on');
+    seatMats.forEach(m => m.color.setRGB(...rgb));
+  });
+  $('cols').appendChild(b);
+});
+
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+buildRoom(); resize(); frameCamera();
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
