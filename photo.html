@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ลองวางเก้าอี้ในรูปห้องของคุณ</title>
+<style>
+  html, body { margin:0; height:100%; font-family: system-ui, "Noto Sans Thai", sans-serif; background:#2a2826; color:#222; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100%; }
+  #top { background:#fff; padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #area { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; position:relative; }
+  #stage { position:relative; background:#4a4642; }
+  #stage canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #fx { touch-action:none; cursor:grab; }
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; color:#ddd; padding:24px; pointer-events:none; line-height:1.6; }
+  #panel { background:#fff; padding:10px 12px; font-size:.88rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px 14px; box-shadow:0 -2px 8px rgba(0,0,0,.15); max-height:34vh; overflow:auto; }
+  #panel label { display:flex; flex-direction:column; gap:2px; }
+  #panel input[type=range] { width:100%; }
+  button, .file { padding:9px 12px; border:0; border-radius:8px; background:#222; color:#fff; cursor:pointer; font-size:.9rem; }
+  .sec { background:#e6e2da !important; color:#222 !important; }
+  .file input { display:none; }
+  .sw { width:26px; height:26px; border-radius:50%; border:2px solid #ccc; padding:0; }
+  .sw.on { border-color:#222; }
+  #tip { grid-column:1/-1; color:#666; font-size:.8rem; line-height:1.5; }
+  a.back { color:#222; margin-left:auto; font-size:.9rem; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <label class="file">ถ่ายรูปมุมห้อง<input type="file" id="cam" accept="image/*" capture="environment"></label>
+    <label class="file sec">เลือกรูปจากเครื่อง<input type="file" id="pick" accept="image/*"></label>
+    <button id="save">บันทึกภาพ</button>
+    <a class="back" href="index.html">← กลับหน้าสินค้า</a>
+  </div>
+
+  <div id="area">
+    <div id="stage">
+      <canvas id="bg"></canvas>
+      <canvas id="fx"></canvas>
+      <div id="empty">ถ่ายรูปหรือเลือกรูปมุมห้องของคุณ<br>แล้วแตะ/ลากบนรูปเพื่อวางเก้าอี้</div>
+    </div>
+  </div>
+
+  <div id="panel">
+    <label>หมุนเก้าอี้ <input type="range" id="yaw" min="0" max="360" step="1" value="200"></label>
+    <label>ขนาดเก้าอี้ <input type="range" id="size" min="0.6" max="1.5" step="0.01" value="1"></label>
+    <label>มุมก้ม/เงยของกล้อง <input type="range" id="pitch" min="-5" max="45" step="0.5" value="18"></label>
+    <label>ความสูงกล้อง (ม.) <input type="range" id="camh" min="0.5" max="2.2" step="0.05" value="1.3"></label>
+    <label>แสงบนเก้าอี้ <input type="range" id="light" min="0.4" max="2.5" step="0.05" value="1.2"></label>
+    <label>สีที่นั่ง <span id="cols"></span></label>
+    <div id="tip">เคล็ดลับ: ถ่ายให้เห็นพื้นบริเวณที่จะวางชัด ๆ ยืนห่างจากมุมห้อง 2–3 เมตร แล้วลากเก้าอี้ไปวาง ถ้าเก้าอี้ดูลอยหรือเอียง ให้ปรับ "มุมก้ม/เงย" จนพื้นดูสมจริง และดูขนาดเทียบกับของที่รู้ขนาด เช่น ประตู โต๊ะ (ภาพจากเครื่องคุณไม่ถูกอัปโหลดไปไหน ประมวลผลบนเครื่องคุณเท่านั้น)</div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const $ = id => document.getElementById(id);
+const bg = $('bg'), fx = $('fx'), stage = $('stage'), area = $('area');
+const bgCtx = bg.getContext('2d');
+
+// ---------- ฉาก 3D (พื้นหลังโปร่งใส ซ้อนบนรูป) ----------
+const renderer = new THREE.WebGLRenderer({ canvas: fx, antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setClearColor(0x000000, 0);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 60);
+const hemi = new THREE.HemisphereLight(0xffffff, 0x998f84, 1.2);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left:-2, right:2, top:2, bottom:-2, near:0.5, far:12 });
+sun.shadow.radius = 4;
+scene.add(sun, sun.target);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.ShadowMaterial({ opacity: 0.4 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const chair = new THREE.Group();
+chair.position.set(0, 0, -2.5);
+scene.add(chair);
+const seatMats = [];
+
+new GLTFLoader().load('chairDesk.glb', gltf => {
+  gltf.scene.traverse(o => {
+    if (o.isMesh) { o.castShadow = true; if (o.material.name === 'carpet') seatMats.push(o.material); }
+  });
+  chair.add(gltf.scene);
+  update();
+}, undefined, () => { $('empty').textContent = 'โหลด chairDesk.glb ไม่สำเร็จ ตรวจสอบว่าไฟล์อยู่โฟลเดอร์เดียวกับหน้านี้'; });
+
+function update() {
+  const pitch = THREE.MathUtils.degToRad(+$('pitch').value);
+  camera.position.set(0, +$('camh').value, 0);
+  camera.rotation.set(-pitch, 0, 0);
+  chair.rotation.y = THREE.MathUtils.degToRad(+$('yaw').value);
+  chair.scale.setScalar(+$('size').value);
+  hemi.intensity = +$('light').value;
+  sun.intensity = +$('light').value;
+  sun.position.set(chair.position.x + 1.5, 4, chair.position.z + 1.5);
+  sun.target.position.copy(chair.position);
+  renderer.render(scene, camera);
+}
+['yaw','size','pitch','camh','light'].forEach(id => $(id).addEventListener('input', update));
+
+// ---------- แตะ/ลากเพื่อวางเก้าอี้บนพื้น ----------
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit = new THREE.Vector3();
+let dragging = false;
+function moveTo(e) {
+  const r = fx.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  camera.updateMatrixWorld();
+  ray.setFromCamera(ndc, camera);
+  if (ray.ray.intersectPlane(floor, hit) && hit.z < -0.6 && hit.z > -12) {
+    chair.position.set(hit.x, 0, hit.z);
+    update();
+  }
+}
+fx.addEventListener('pointerdown', e => { dragging = true; fx.setPointerCapture(e.pointerId); moveTo(e); });
+fx.addEventListener('pointermove', e => { if (dragging) moveTo(e); });
+const stop = () => { dragging = false; };
+fx.addEventListener('pointerup', stop);
+fx.addEventListener('pointercancel', stop);
+
+// ---------- สีที่นั่ง ----------
+[['#d94038',[0.85,0.25,0.22]],['#2f6fd1',[0.18,0.44,0.82]],['#2e9e6a',[0.18,0.62,0.42]],['#2b2b2b',[0.17,0.17,0.17]]]
+.forEach(([hex, rgb], i) => {
+  const b = document.createElement('button');
+  b.className = 'sw' + (i === 0 ? ' on' : ''); b.style.background = hex;
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.sw').forEach(x => x.classList.remove('on')); b.classList.add('on');
+    seatMats.forEach(m => m.color.setRGB(...rgb)); update();
+  });
+  $('cols').appendChild(b);
+});
+
+// ---------- รูปห้อง ----------
+let bgW = 4, bgH = 3, hasPhoto = false;
+function loadPhoto(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    bgW = Math.round(img.naturalWidth * k); bgH = Math.round(img.naturalHeight * k);
+    bg.width = bgW; bg.height = bgH;
+    bgCtx.drawImage(img, 0, 0, bgW, bgH);
+    URL.revokeObjectURL(url);
+    hasPhoto = true; $('empty').style.display = 'none';
+    fit();
+  };
+  img.onerror = () => { $('empty').textContent = 'เปิดรูปนี้ไม่ได้ ลองรูปแบบ JPG/PNG'; $('empty').style.display = 'flex'; };
+  img.src = url;
+}
+$('cam').addEventListener('change', e => loadPhoto(e.target.files[0]));
+$('pick').addEventListener('change', e => loadPhoto(e.target.files[0]));
+
+// ---------- จัดขนาดให้พอดีหน้าจอ ----------
+function fit() {
+  const aw = area.clientWidth, ah = area.clientHeight;
+  const s = Math.min(aw / bgW, ah / bgH);
+  const w = Math.max(1, Math.floor(bgW * s)), h = Math.max(1, Math.floor(bgH * s));
+  stage.style.width = w + 'px'; stage.style.height = h + 'px';
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  update();
+}
+addEventListener('resize', fit);
+if (!hasPhoto) { bg.width = bgW; bg.height = bgH; }
+fit();
+
+// ---------- บันทึกภาพรวม ----------
+$('save').addEventListener('click', () => {
+  if (!hasPhoto) { alert('เลือกรูปห้องก่อนนะครับ'); return; }
+  update();
+  const out = document.createElement('canvas');
+  out.width = bgW; out.height = bgH;
+  const c = out.getContext('2d');
+  c.drawImage(bg, 0, 0);
+  c.drawImage(fx, 0, 0, bgW, bgH);
+  out.toBlob(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'my-room-with-chair.png';
+    document.body.appendChild(a); a.click(); a.remove();
+  }, 'image/png');
+});
+</script>
+</body>
+</html>
